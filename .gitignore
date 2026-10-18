@@ -15,9 +15,17 @@ datasets/**/*.jsonl
 datasets/**/*.json
 !datasets/.gitkeep
 
-# Evolution snapshots
+# Evolution snapshots & local runtime artifacts
 snapshots/
+output/
+graphify-out/
+.pytest-cache/
+.pytest_cache/
+.gw-adapter-guard*
 *.pkl
+*.db
+*.sqlite
+*.sqlite-*
 
 # IDE
 .idea/

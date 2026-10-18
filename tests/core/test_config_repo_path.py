@@ -1,19 +1,4 @@
-"""Regression tests for hermes-agent repo path resolution.
-
-Background
-----------
-Before this fix, ``EvolutionConfig.hermes_agent_path`` used a default factory
-that ran ``get_hermes_agent_path()`` at construction time. That meant:
-
-* constructing a bare ``EvolutionConfig()`` raised ``FileNotFoundError`` whenever
-  the default ``~/.hermes/hermes-agent`` location was absent (this is what made
-  16 tests in ``tests/core/test_constraints.py`` error on a clean checkout), and
-* ``evolve(..., hermes_repo=...)`` crashed before the explicit ``--hermes-repo``
-  override could be applied, so the documented flag did nothing.
-
-These tests lock in the fixed behavior at three levels: the resolver helper,
-the config dataclass, and the CLI end to end.
-"""
+"""Regression tests for hermes-agent repo path resolution."""
 
 from pathlib import Path
 
@@ -31,13 +16,11 @@ def _make_skill_repo(tmp_path) -> Path:
     return repo
 
 
-# ── resolver helper ────────────────────────────────────────────────────────
-
 def test_resolve_honors_explicit_path_without_default(tmp_path, monkeypatch):
     from evolution.core.config import resolve_hermes_agent_path
 
     monkeypatch.delenv("HERMES_AGENT_REPO", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path / "empty"))  # no default location
+    monkeypatch.setenv("HOME", str(tmp_path / "empty"))
 
     explicit = tmp_path / "somewhere" / "hermes-agent"
     assert resolve_hermes_agent_path(str(explicit)) == explicit
@@ -59,8 +42,6 @@ def test_resolve_falls_back_to_env_var_when_no_override(tmp_path, monkeypatch):
     assert resolve_hermes_agent_path() == repo
 
 
-# ── config dataclass (root cause) ──────────────────────────────────────────
-
 def test_config_constructs_without_repo(tmp_path, monkeypatch):
     """A bare EvolutionConfig() must not raise when no repo is present."""
     from evolution.core.config import EvolutionConfig
@@ -68,7 +49,7 @@ def test_config_constructs_without_repo(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_AGENT_REPO", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "empty"))
 
-    config = EvolutionConfig()  # must not raise
+    config = EvolutionConfig()
     assert config.hermes_agent_path is None
 
 
@@ -80,11 +61,8 @@ def test_config_preserves_explicit_path(tmp_path):
     assert EvolutionConfig(hermes_agent_path=explicit).hermes_agent_path == explicit
 
 
-# ── CLI end to end ─────────────────────────────────────────────────────────
-
 def test_cli_dry_run_honors_explicit_repo(tmp_path, monkeypatch):
-    """`evolve_skill --hermes-repo <path> --dry-run` must work when the default
-    location is absent. This is the exact scenario the bug broke."""
+    """`evolve_skill --hermes-repo <path> --dry-run` must work when the default location is absent."""
     from evolution.skills.evolve_skill import main
 
     monkeypatch.delenv("HERMES_AGENT_REPO", raising=False)

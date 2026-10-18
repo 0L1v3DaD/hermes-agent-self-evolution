@@ -16,7 +16,7 @@ Usage as standalone CLI:
         --source all --skill my-skill --dry-run
 
     python -m evolution.core.external_importers \\
-        --source claude-code --skill my-skill --model openrouter/google/gemini-2.5-flash
+        --source claude-code --skill my-skill --model openai/gemini-4-argon
 
 Usage from evolve_skill.py:
     python -m evolution.skills.evolve_skill --skill my-skill --eval-source sessiondb
@@ -332,22 +332,20 @@ def _parse_copilot_events(
 
 
 class HermesSessionImporter:
-    """Import conversations from Hermes Agent session files.
+    """Import conversations from Hermes Agent SQLite state.db (and fallback JSON snapshots).
 
-    Hermes stores session transcripts as JSON files in ~/.hermes/sessions/.
-    Each file contains an OpenAI-format message list with user, assistant,
-    and tool messages — providing richer signal than Claude Code (user-only)
-    or Copilot (user+assistant without tool context).
-
-    This mines user messages paired with the assistant's final response,
-    giving the LLM judge both the task and how it was actually handled.
+    Hermes stores active session transcripts in ~/.hermes/state.db (`sessions` and
+    `messages` tables) when `write_json_snapshots: false` is configured.
+    Falls back to ~/.hermes/sessions/*.json only when state.db is absent.
     """
 
-    SESSION_DIR = Path.home() / ".hermes" / "sessions"
+    DB_PATH = Path.home() / ".hermes" / "state.db"
+    _DEFAULT_SESSION_DIR = Path.home() / ".hermes" / "sessions"
+    SESSION_DIR = _DEFAULT_SESSION_DIR
 
     @staticmethod
     def extract_messages(limit: int = 0) -> list[dict]:
-        """Read user/assistant pairs from Hermes session files.
+        """Read user/assistant pairs from Hermes state.db (or fallback session JSONs).
 
         Args:
             limit: Maximum messages to return (0 = no limit).
@@ -356,10 +354,77 @@ class HermesSessionImporter:
             List of dicts with keys: source, task_input, assistant_response,
             session_id.
         """
+        messages: list[dict] = []
+
+        if (
+            HermesSessionImporter.SESSION_DIR == HermesSessionImporter._DEFAULT_SESSION_DIR
+            and HermesSessionImporter.DB_PATH.exists()
+        ):
+            try:
+                import contextlib
+                import sqlite3
+                with contextlib.closing(
+                    sqlite3.connect(f"file:{HermesSessionImporter.DB_PATH}?mode=ro", uri=True, timeout=5.0)
+                ) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT m.session_id, m.role, m.content
+                        FROM messages m
+                        LEFT JOIN sessions s ON s.id = m.session_id
+                        WHERE m.role IN ('user', 'assistant')
+                          AND COALESCE(s.source, '') NOT IN ('cron', 'subagent')
+                          AND m.content IS NOT NULL
+                        ORDER BY m.session_id, m.id ASC
+                        """
+                    ).fetchall()
+
+                idx = 0
+                n_rows = len(rows)
+                while idx < n_rows:
+                    sess_id, role, content = rows[idx]
+                    if role != "user":
+                        idx += 1
+                        continue
+                    user_text = (content or "").strip()
+                    if (
+                        len(user_text) < 10
+                        or user_text.startswith("[ASYNC DELEGATION")
+                        or user_text.startswith("[/loop wakeup")
+                        or _contains_secret(user_text)
+                    ):
+                        idx += 1
+                        continue
+
+                    assistant_text = ""
+                    j = idx + 1
+                    while j < n_rows and rows[j][0] == sess_id:
+                        next_role, next_content = rows[j][1], (rows[j][2] or "").strip()
+                        if next_role == "assistant" and next_content:
+                            assistant_text = next_content
+                            break
+                        if next_role == "user":
+                            break
+                        j += 1
+
+                    if assistant_text and not _contains_secret(assistant_text):
+                        messages.append({
+                            "source": "hermes",
+                            "task_input": user_text,
+                            "assistant_response": assistant_text,
+                            "session_id": sess_id,
+                        })
+                        if limit and len(messages) >= limit:
+                            return messages
+                    idx += 1
+
+                if messages:
+                    return messages
+            except Exception as e:
+                console.print(f"[dim]Hermes state.db read fallback: {e}[/dim]")
+
         if not HermesSessionImporter.SESSION_DIR.exists():
             return []
 
-        messages = []
         session_files = sorted(
             HermesSessionImporter.SESSION_DIR.glob("*.json"),
             key=lambda p: p.stat().st_mtime,
@@ -422,9 +487,10 @@ class HermesSessionImporter:
 class RelevanceFilter:
     """Use LLM-as-judge to determine which messages are relevant to a skill.
 
-    Two-stage pipeline:
+    Three-stage pipeline:
       1. Cheap heuristic pre-filter (_is_relevant_to_skill)
-      2. LLM scoring for final relevance + eval metadata generation
+      2. Semantic embedding reranking via `gemini-embedding-2` (when available)
+      3. LLM scoring for final relevance + eval metadata generation
     """
 
     class ScoreRelevance(dspy.Signature):
@@ -482,15 +548,29 @@ class RelevanceFilter:
             random.shuffle(remaining)
             candidates.extend(remaining[:max_examples * 2])
 
-        # Cap candidates to control LLM costs
-        candidates = candidates[:max_examples * 3]
+        # Stage 1.5: Semantic reranking with `gemini-embedding-2` when candidate pool is large
+        if len(candidates) > max_examples * 2:
+            try:
+                from evolution.core.fitness import compute_embedding_similarity
+                scored_cands = []
+                for m in candidates[:max_examples * 6]:
+                    sim = compute_embedding_similarity(skill_desc, m["task_input"][:500])
+                    scored_cands.append((sim if sim is not None else 0.0, m))
+                scored_cands.sort(key=lambda pair: pair[0], reverse=True)
+                candidates = [m for _, m in scored_cands[:max_examples * 3]]
+            except Exception:
+                candidates = candidates[:max_examples * 3]
+        else:
+            candidates = candidates[:max_examples * 3]
 
         console.print(f"  Pre-filtered to {len(candidates)} candidates (from {len(messages)} total)")
 
         # Stage 2: LLM relevance scoring
         examples = []
         errors = 0
-        lm = dspy.LM(self.model)
+        from evolution.core.config import EvolutionConfig
+        _cfg = EvolutionConfig()
+        lm = dspy.LM(self.model, api_base=_cfg.api_base, api_key=_cfg.api_key, max_tokens=32768)
 
         with Progress() as progress:
             task = progress.add_task("Scoring relevance...", total=len(candidates))
@@ -736,7 +816,7 @@ def _load_skill_text(skill_name: str, skills_dir: Optional[Path] = None) -> tupl
 @click.option("--skill", required=True, help="Skill name to generate eval data for")
 @click.option("--output", type=click.Path(), default=None,
               help="Output directory (default: datasets/skills/<skill>/)")
-@click.option("--model", default="openrouter/google/gemini-2.5-flash",
+@click.option("--model", default="openai/gemini-3.8-flash",
               help="LiteLLM model string for relevance scoring")
 @click.option("--max-examples", default=50, help="Max eval examples to generate")
 @click.option("--dry-run", is_flag=True, help="Show message counts without LLM scoring")
@@ -752,7 +832,7 @@ def main(source, skill, output, model, max_examples, dry_run):
 
     console.print(f"  Loaded skill: {skill_name} ({len(skill_text):,} chars)")
 
-    sources = [source] if source != "all" else ["claude-code", "copilot", "hermes"]
+    sources = [source] if source != "all" else ["hermes", "claude-code", "copilot"]
 
     if dry_run:
         importers = {

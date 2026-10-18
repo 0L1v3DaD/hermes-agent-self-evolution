@@ -75,13 +75,25 @@ class EvalDataset:
         return dataset
 
     def to_dspy_examples(self, split: str = "train") -> list[dspy.Example]:
-        """Convert a split to DSPy Example objects."""
+        """Convert a split to DSPy Example objects.
+
+        Each example is annotated with the static ``available_toolsets`` prompt
+        prefix so it survives the SkillModule.forward() input validation that
+        expects all signature input fields to be present. The toolsets value is
+        intentionally NOT marked as a with_inputs key — it's a constant, not a
+        per-example variable, and we don't want it counted as a feature for
+        few-shot bootstrapping.
+        """
+        from evolution.core.toolset_discovery import format_toolsets_for_prompt
+        toolsets_prompt = format_toolsets_for_prompt()
+
         data = getattr(self, split)
         return [
             dspy.Example(
                 task_input=ex.task_input,
                 expected_behavior=ex.expected_behavior,
-            ).with_inputs("task_input")
+                available_toolsets=toolsets_prompt,
+            ).with_inputs("task_input", "available_toolsets")
             for ex in data
         ]
 
@@ -122,8 +134,13 @@ class SyntheticDatasetBuilder:
 
         n = num_cases or self.config.eval_dataset_size
 
-        # Configure DSPy to use the judge model for generation
-        lm = dspy.LM(self.config.judge_model)
+        # Configure DSPy to use the judge model for generation with generous token budget
+        lm = dspy.LM(
+            model=self.config.judge_model,
+            api_base=self.config.api_base,
+            api_key=self.config.api_key,
+            max_tokens=32768,
+        )
 
         with dspy.context(lm=lm):
             result = self.generator(

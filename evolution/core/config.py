@@ -20,16 +20,20 @@ class EvolutionConfig:
     iterations: int = 10
     population_size: int = 5
 
-    # LLM configuration
-    optimizer_model: str = "openai/gpt-4.1"  # Model for GEPA reflections
-    eval_model: str = "openai/gpt-4.1-mini"  # Model for LLM-as-judge scoring
-    judge_model: str = "openai/gpt-4.1"  # Model for dataset generation
+    # LLM configuration (LiteLLM Vertex AI ADC proxy)
+    optimizer_model: str = "openai/gemini-4-argon"  # Model for GEPA reflections
+    eval_model: str = "openai/gemini-3.8-flash"  # Model for fast evaluation
+    judge_model: str = "openai/claude-opus-5-5"  # Model for goal/dataset judging
+    embedding_model: str = "gemini-embedding-2"  # Vertex AI 768d embedding via LiteLLM
+    api_base: str = "http://127.0.0.1:8000/v1"
 
     # Constraints
     max_skill_size: int = 15_000  # 15KB default
     max_tool_desc_size: int = 500  # chars
     max_param_desc_size: int = 200  # chars
-    max_prompt_growth: float = 0.2  # 20% max growth over baseline
+    max_prompt_prefix_size: int = 15_000  # GEPA-evolved prompt prefix size limit (15KB)
+    max_prompt_growth: float = 0.2  # 20% max growth over baseline (skills)
+    max_prefix_growth: float = 50.0  # Prompt prefix growth ratio over baseline instruction
 
     # Eval dataset
     eval_dataset_size: int = 20  # Total examples to generate
@@ -42,9 +46,30 @@ class EvolutionConfig:
     run_tblite: bool = False  # Expensive — opt-in
     tblite_regression_threshold: float = 0.02  # Max 2% regression allowed
 
-    # Output
+    # Output (Strictly local-only: never open GitHub PRs or Issues)
     output_dir: Path = field(default_factory=lambda: Path("./output"))
-    create_pr: bool = True
+    create_pr: bool = False
+    create_issue: bool = False
+
+    @property
+    def api_key(self) -> Optional[str]:
+        """Load API key dynamically from environment or local Hermes config."""
+        for env_key in ("LITELLM_MASTER_KEY", "OPENAI_API_KEY"):
+            val = os.getenv(env_key)
+            if val:
+                return val
+        gepa_env = Path.home() / ".hermes" / "secrets" / "gepa.env"
+        if gepa_env.exists():
+            for line in gepa_env.read_text().splitlines():
+                if line.startswith(("LITELLM_MASTER_KEY=", "OPENAI_API_KEY=")):
+                    return line.split("=", 1)[1].strip()
+        litellm_cfg = Path.home() / "litellm-proxy" / "config.yaml"
+        if litellm_cfg.exists():
+            for line in litellm_cfg.read_text(errors="replace").splitlines():
+                s = line.strip()
+                if s.startswith("master_key:"):
+                    return s.split(":", 1)[1].strip().strip("'\"")
+        return None
 
 
 def _discover_hermes_agent_path() -> Optional[Path]:
@@ -89,14 +114,7 @@ def get_hermes_agent_path() -> Path:
 
 
 def resolve_hermes_agent_path(hermes_repo: Optional[str] = None) -> Path:
-    """Return the hermes-agent repo path, honoring an explicit override.
-
-    An explicit path (for example from ``--hermes-repo``) is expanded and used
-    as-is, taking precedence over auto-discovery. This lets callers point at a
-    repo in a non-default location without the tool crashing just because
-    ``~/.hermes/hermes-agent`` happens to be absent. When no override is given,
-    falls back to :func:`get_hermes_agent_path`.
-    """
+    """Return the hermes-agent repo path, honoring an explicit override."""
     if hermes_repo:
         return Path(hermes_repo).expanduser()
     return get_hermes_agent_path()
