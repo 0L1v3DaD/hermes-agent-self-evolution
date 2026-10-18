@@ -226,8 +226,9 @@ def evolve(
             evolved_instruction = ""
 
     baseline_instruction = SkillModule(skill["body"]).predictor.predict.signature.instructions
+    evolved_prefix = evolved_instruction.strip()
 
-    if evolved_instruction.strip() == baseline_instruction.strip():
+    if evolved_prefix == baseline_instruction.strip():
         console.print("[yellow]⚠ GEPA did not improve the prompt — evolved == baseline. Saving baseline as is.[/yellow]")
         evolved_body = skill["body"]
     else:
@@ -250,6 +251,28 @@ def evolve(
         #     similarity_floor reflect the real shipping artifact, not a
         #     stripped-down version.
         evolved_prefix = evolved_instruction.strip()
+        if len(evolved_prefix) > config.max_prompt_prefix_size:
+            target_len = max(1000, config.max_prompt_prefix_size - 200)
+            paragraphs = evolved_prefix.split("\n\n")
+            kept_paragraphs: list[str] = []
+            current_len = 0
+            for para in paragraphs:
+                sep = 2 if kept_paragraphs else 0
+                if current_len + sep + len(para) <= target_len:
+                    kept_paragraphs.append(para)
+                    current_len += sep + len(para)
+                else:
+                    break
+            evolved_prefix = "\n\n".join(kept_paragraphs).strip() or evolved_prefix[:target_len].rstrip()
+            try:
+                sig = optimized_module.predictor.predict.signature
+                optimized_module.predictor.predict.signature = sig.with_instructions(evolved_prefix)
+            except Exception:
+                pass
+            console.print(
+                f"  [yellow]Compacted over-budget GEPA prefix from {len(evolved_instruction.strip())} "
+                f"to {len(evolved_prefix)} chars (limit {config.max_prompt_prefix_size})[/yellow]"
+            )
         prefix_block = (
             "<!-- BEGIN GEPA-EVOLVED BEHAVIORAL GUIDANCE -->\n"
             "## Behavioral Guidance (GEPA-evolved)\n\n"
@@ -266,25 +289,9 @@ def evolve(
 
     # ── 7. Validate evolved skill ───────────────────────────────────────
     console.print(f"\n[bold]Validating evolved skill[/bold]")
-    # PATCH 3 (2026-05-10) — Two-tier validation for additive reassembly.
-    # The size_limit + growth_limit constraints would always fail against the
-    # full merged artifact (~110KB) because they're calibrated for prompt
-    # prefixes, not full skill bodies. Solution: validate the EVOLVED PREFIX
-    # against size/growth (it's the only thing that actually changed), and
-    # validate the FULL merged artifact against everything else (structure,
-    # safety, capability-denial regex, similarity floor against baseline).
     if evolved_instruction.strip() != baseline_instruction.strip():
-        # Tier 1: prefix-only checks (size, growth)
-        # PATCH 5 (2026-05-10): use new "prompt_prefix" artifact type with
-        # 15K size cap + 50× growth budget. Was incorrectly routed through
-        # "tool_description" (500 char cap, 0.2 growth) which fails for any
-        # non-trivial GEPA output. The verified 2026-05-10 run produced a
-        # 7,423-char prefix (vs 510-char baseline) — strong behavioral
-        # guidance — that the tool_description gates rejected as "size
-        # exceeded 7423/500" and "growth +1355.5%". Both verdicts were
-        # validator misconfigurations, not real quality issues.
         prefix_constraints = validator.validate_all(
-            evolved_instruction.strip(),
+            evolved_prefix,
             "prompt_prefix",
             baseline_text=baseline_instruction,
         )
@@ -319,11 +326,25 @@ def evolve(
 
     if not all_pass:
         console.print("[red]✗ Evolved skill FAILED constraints — not deploying[/red]")
-        # Still save for inspection
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        failed_dir = Path("output") / skill_name / f"{timestamp}_FAILED"
+        failed_dir.mkdir(parents=True, exist_ok=True)
+        (failed_dir / "evolved_FAILED.md").write_text(evolved_full)
+        (failed_dir / "metrics.json").write_text(
+            json.dumps(
+                {
+                    "skill_name": skill_name,
+                    "timestamp": timestamp,
+                    "constraints_passed": False,
+                    "failed_constraints": [c.constraint_name for c in evolved_constraints if not c.passed],
+                },
+                indent=2,
+            )
+        )
         output_path = Path("output") / skill_name / "evolved_FAILED.md"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(evolved_full)
-        console.print(f"  Saved failed variant to {output_path}")
+        console.print(f"  Saved failed variant to {failed_dir}/ and {output_path}")
         return
 
     # ── 8. Evaluate on holdout set ──────────────────────────────────────

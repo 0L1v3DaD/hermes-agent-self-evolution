@@ -25,6 +25,7 @@ import tempfile
 import argparse
 import contextlib
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from rich.console import Console
@@ -186,7 +187,7 @@ class ContinuousImprovementMonitor:
         attribution = self.evaluate_experience_attribution(recorded_edits)
 
         registry_payload = {
-            "updated_at": "2026-10-18T06:00:00Z",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "policy": {"create_pr": False, "create_issue": False, "admission_gate": "Harness2+TeSearch+EvolvAttack"},
             "evolved_skills_count": len(evolved_skills),
             "latest_evolved_skills": evolved_skills[-5:],
@@ -350,6 +351,7 @@ class ContinuousImprovementMonitor:
         sources_dir.mkdir(parents=True, exist_ok=True)
         concepts_dir.mkdir(parents=True, exist_ok=True)
         hermes_mem_dir = Path.home() / ".hermes" / "memories"
+        created_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         synced: list[str] = []
         for src_name, slug, title in [
             ("MEMORY.md", "hermes-agent-memory.md", "Hermes Agent Long-Term Memory"),
@@ -363,10 +365,13 @@ class ContinuousImprovementMonitor:
                     f"---\n"
                     f"title: \"{title}\"\n"
                     f"type: note\n"
+                    f"created: {created_date}\n"
                     f"source: hermes-agent\n"
                     f"---\n\n"
                     f"# {title}\n\n"
-                    f"Related: [[index]], [[hermes-holographic-facts]], [[hermes-interaction-telemetry]]\n\n"
+                    f"Related: [[index]], [[concepts/hermes-holographic-facts]], [[concepts/hermes-interaction-telemetry]], "
+                    f"[[sources/hermes-agent-memory]], [[sources/hermes-user-profile]], "
+                    f"[[.hermes/wiki/main/concepts/hermes-holographic-facts]], [[.hermes/wiki/main/sources/hermes-agent-memory]], [[.hermes/wiki/main/sources/hermes-user-profile]]\n\n"
                     f"{body}\n"
                 )
                 self._atomic_write_text(dest_path, content)
@@ -378,7 +383,7 @@ class ContinuousImprovementMonitor:
             try:
                 with contextlib.closing(sqlite3.connect(f"file:{mem_db}?mode=ro", uri=True, timeout=5.0)) as conn:
                     rows = conn.execute(
-                        "SELECT category, content, trust_score FROM facts ORDER BY trust_score DESC, updated_at DESC LIMIT 100"
+                        "SELECT category, content, trust_score FROM facts ORDER BY trust_score DESC, updated_at DESC LIMIT 80"
                     ).fetchall()
                 stale_pat = re.compile(r"(dgxspark|TEMP_AUDIT_ENTRY_DELETE_ME)", re.I)
                 filtered_rows = [
@@ -391,12 +396,14 @@ class ContinuousImprovementMonitor:
                         "---",
                         'title: "Hermes Holographic Fact Bank"',
                         "type: concept",
+                        f"created: {created_date}",
                         "source: hermes-memory-store",
                         "---",
                         "",
                         "# Hermes Holographic Fact Bank",
                         "",
-                        "Related: [[index]], [[hermes-agent-memory]], [[hermes-user-profile]], [[hermes-interaction-telemetry]]",
+                        "Related: [[index]], [[sources/hermes-agent-memory]], [[sources/hermes-user-profile]], [[concepts/hermes-interaction-telemetry]], "
+                        "[[.hermes/wiki/main/sources/hermes-agent-memory]], [[.hermes/wiki/main/sources/hermes-user-profile]]",
                         "",
                         "## Anti-Confusion Contrast Rules (STRATA arXiv:2610.19386)",
                         "- **DO NOT CONFUSE (`dgxspark` retired)**: `dgxspark` was decommissioned and is no longer owned. Never SSH to or route workloads to `dgxspark`; all inference runs via local LiteLLM (`http://127.0.0.1:8000/v1`) on Vertex AI ADC.",
@@ -406,15 +413,15 @@ class ContinuousImprovementMonitor:
                         "## Verified Holographic Facts (Bi-Temporal Consolidated)",
                     ]
                     active_facts, superseded_facts = self.consolidate_bitemporal_facts(filtered_rows)
-                    for cat, content_txt, trust in active_facts:
-                        clean_txt = str(content_txt).replace("\n", " ").strip()
+                    for cat, content_txt, trust in active_facts[:50]:
+                        clean_txt = str(content_txt).replace("\n", " ").strip()[:360]
                         lines.append(f"- **[ACTIVE | {cat}]** (trust={trust:.2f}): {clean_txt}")
                     if superseded_facts:
                         lines.append("")
                         lines.append("## Superseded Historical Claims (Bi-Temporal Audit Trail)")
-                        for item in superseded_facts[:20]:
+                        for item in superseded_facts[:15]:
                             lines.append(
-                                f"- ~~[{item['category']}] (trust={item['trust']:.2f}): {item['content']}~~ "
+                                f"- ~~[{item['category']}] (trust={item['trust']:.2f}): {item['content'][:240]}~~ "
                                 f"*(superseded by higher-trust active fact on `{item['subject_key']}`)*"
                             )
                     fact_path = concepts_dir / "hermes-holographic-facts.md"
@@ -435,9 +442,11 @@ class ContinuousImprovementMonitor:
                     "---\n"
                     'title: "Hermes Harness-Native Interaction Telemetry"\n'
                     "type: concept\n"
+                    f"created: {created_date}\n"
                     "source: hermes-self-evolution\n"
                     "---\n\n"
-                    "Related: [[index]], [[hermes-agent-memory]], [[hermes-user-profile]], [[hermes-holographic-facts]]\n\n"
+                    "Related: [[index]], [[sources/hermes-agent-memory]], [[sources/hermes-user-profile]], [[concepts/hermes-holographic-facts]], "
+                    "[[.hermes/wiki/main/concepts/hermes-holographic-facts]], [[.hermes/wiki/main/sources/hermes-agent-memory]], [[.hermes/wiki/main/sources/hermes-user-profile]]\n\n"
                     f"{lrn_txt}\n\n{err_txt}\n",
                 )
                 synced.append(str(telem_path))
@@ -450,18 +459,31 @@ class ContinuousImprovementMonitor:
             "---\n"
             'title: "Hermes Agent Isolated Knowledge Wiki"\n'
             "type: index\n"
+            f"created: {created_date}\n"
             "source: hermes-agent\n"
             "---\n\n"
             "# Hermes Agent Isolated Knowledge Wiki\n\n"
             "## Core Sources\n"
-            "- [[hermes-agent-memory]] — Hermes Agent Long-Term Memory\n"
-            "- [[hermes-user-profile]] — Hermes Agent User Profile\n\n"
+            "- [[sources/hermes-agent-memory]] ([[hermes-agent-memory]] / [[.hermes/wiki/main/sources/hermes-agent-memory]]) — Hermes Agent Long-Term Memory\n"
+            "- [[sources/hermes-user-profile]] ([[hermes-user-profile]] / [[.hermes/wiki/main/sources/hermes-user-profile]]) — Hermes Agent User Profile\n\n"
             "## Concepts & Telemetry\n"
-            "- [[hermes-holographic-facts]] — Hermes Holographic Fact Bank (STRATA Contrast-Guarded)\n"
-            "- [[hermes-interaction-telemetry]] — Hermes Harness-Native Interaction Telemetry\n"
+            "- [[concepts/hermes-holographic-facts]] ([[hermes-holographic-facts]] / [[.hermes/wiki/main/concepts/hermes-holographic-facts]]) — Hermes Holographic Fact Bank (STRATA Contrast-Guarded)\n"
+            "- [[concepts/hermes-interaction-telemetry]] ([[hermes-interaction-telemetry]]) — Hermes Harness-Native Interaction Telemetry\n"
         )
         self._atomic_write_text(index_path, index_content)
         synced.append(str(index_path))
+
+        # Ensure vault has its own local git repository so GBrain sync tracks changes cleanly
+        try:
+            if not (vault / ".git").exists():
+                subprocess.run(["git", "init", "-b", "main"], cwd=str(vault), check=False, capture_output=True)
+                subprocess.run(["git", "config", "user.email", "hermes@local"], cwd=str(vault), check=False, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "Hermes Agent"], cwd=str(vault), check=False, capture_output=True)
+            subprocess.run(["git", "add", "-A"], cwd=str(vault), check=False, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "chore(wiki): sync Hermes knowledge vault"], cwd=str(vault), check=False, capture_output=True)
+        except Exception:
+            pass
+
         return synced
 
     def _run_isolated_gbrain_dream(self, agent_name: str, gbrain_home_parent: Path, wiki_dir: Path, dry_run: bool = False) -> dict:
@@ -476,6 +498,9 @@ class ContinuousImprovementMonitor:
         lock_file_path = gbrain_dot_dir / "single_writer.flock"
 
         env = os.environ.copy()
+        bun_bin = str(Path.home() / ".bun" / "bin")
+        node_bin = str(Path.home() / ".nvm" / "versions" / "node" / "v24.16.0" / "bin")
+        env["PATH"] = f"{bun_bin}:{node_bin}:/usr/local/bin:/usr/bin:/bin:" + env.get("PATH", "")
         env["GBRAIN_HOME"] = str(gbrain_home_parent)
         env["GBRAIN_MODEL"] = "litellm:gemini-3.8-flash"
         env["LITELLM_BASE_URL"] = self.config.api_base
@@ -513,8 +538,17 @@ class ContinuousImprovementMonitor:
                 json_str = proc.stdout[idx + 1:].strip() if idx != -1 else proc.stdout[proc.stdout.find("{"):].strip()
                 if json_str.startswith("{"):
                     report = json.loads(json_str)
+                elif proc.returncode == 0:
+                    report = {"status": "completed", "exit_code": 0, "stdout_tail": proc.stdout[-500:]}
                 else:
-                    report = {"status": "completed", "exit_code": proc.returncode, "stdout_tail": proc.stdout[-500:]}
+                    report = {
+                        "status": "error",
+                        "exit_code": proc.returncode,
+                        "stdout_tail": proc.stdout[-500:],
+                        "stderr_tail": proc.stderr[-500:],
+                    }
+                    console.print(f"[red][!] Isolated GBrain Dream failed (exit={proc.returncode}) for {agent_name}[/red]")
+                    return report
                 console.print(f"[green][✓] Isolated GBrain Dream cycle completed for {agent_name} ({gbrain_dot_dir})[/green]")
                 return report
             except Exception as e:
