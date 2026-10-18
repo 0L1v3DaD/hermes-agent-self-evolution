@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import json
+import shutil
 import sqlite3
 import tempfile
 import argparse
@@ -220,7 +221,7 @@ class ContinuousImprovementMonitor:
             cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT target_name, MAX(accuracy) as max_acc 
+                SELECT target_name, MAX(accuracy) as max_acc, MAX(score) as max_score
                 FROM candidates 
                 WHERE is_compilation_only = 0
                 GROUP BY target_name
@@ -228,9 +229,9 @@ class ContinuousImprovementMonitor:
             rows = cursor.fetchall()
 
         underperforming = []
-        for target, acc in rows:
-            if acc < threshold:
-                underperforming.append((target, acc))
+        for target, acc, max_score in rows:
+            if float(acc or 0.0) < threshold:
+                underperforming.append((target, round(float(acc or 0.0), 4)))
 
         if not rows:
             underperforming.append(("tip_tool", 0.85))
@@ -370,8 +371,7 @@ class ContinuousImprovementMonitor:
                     f"---\n\n"
                     f"# {title}\n\n"
                     f"Related: [[index]], [[concepts/hermes-holographic-facts]], [[concepts/hermes-interaction-telemetry]], "
-                    f"[[sources/hermes-agent-memory]], [[sources/hermes-user-profile]], "
-                    f"[[.hermes/wiki/main/concepts/hermes-holographic-facts]], [[.hermes/wiki/main/sources/hermes-agent-memory]], [[.hermes/wiki/main/sources/hermes-user-profile]]\n\n"
+                    f"[[sources/hermes-agent-memory]], [[sources/hermes-user-profile]]\n\n"
                     f"{body}\n"
                 )
                 self._atomic_write_text(dest_path, content)
@@ -402,8 +402,7 @@ class ContinuousImprovementMonitor:
                         "",
                         "# Hermes Holographic Fact Bank",
                         "",
-                        "Related: [[index]], [[sources/hermes-agent-memory]], [[sources/hermes-user-profile]], [[concepts/hermes-interaction-telemetry]], "
-                        "[[.hermes/wiki/main/sources/hermes-agent-memory]], [[.hermes/wiki/main/sources/hermes-user-profile]]",
+                        "Related: [[index]], [[sources/hermes-agent-memory]], [[sources/hermes-user-profile]], [[concepts/hermes-interaction-telemetry]]",
                         "",
                         "## Anti-Confusion Contrast Rules (STRATA arXiv:2610.19386)",
                         "- **DO NOT CONFUSE (`dgxspark` retired)**: `dgxspark` was decommissioned and is no longer owned. Never SSH to or route workloads to `dgxspark`; all inference runs via local LiteLLM (`http://127.0.0.1:8000/v1`) on Vertex AI ADC.",
@@ -445,8 +444,7 @@ class ContinuousImprovementMonitor:
                     f"created: {created_date}\n"
                     "source: hermes-self-evolution\n"
                     "---\n\n"
-                    "Related: [[index]], [[sources/hermes-agent-memory]], [[sources/hermes-user-profile]], [[concepts/hermes-holographic-facts]], "
-                    "[[.hermes/wiki/main/concepts/hermes-holographic-facts]], [[.hermes/wiki/main/sources/hermes-agent-memory]], [[.hermes/wiki/main/sources/hermes-user-profile]]\n\n"
+                    "Related: [[index]], [[sources/hermes-agent-memory]], [[sources/hermes-user-profile]], [[concepts/hermes-holographic-facts]]\n\n"
                     f"{lrn_txt}\n\n{err_txt}\n",
                 )
                 synced.append(str(telem_path))
@@ -464,11 +462,11 @@ class ContinuousImprovementMonitor:
             "---\n\n"
             "# Hermes Agent Isolated Knowledge Wiki\n\n"
             "## Core Sources\n"
-            "- [[sources/hermes-agent-memory]] ([[hermes-agent-memory]] / [[.hermes/wiki/main/sources/hermes-agent-memory]]) — Hermes Agent Long-Term Memory\n"
-            "- [[sources/hermes-user-profile]] ([[hermes-user-profile]] / [[.hermes/wiki/main/sources/hermes-user-profile]]) — Hermes Agent User Profile\n\n"
+            "- [[sources/hermes-agent-memory]] — Hermes Agent Long-Term Memory\n"
+            "- [[sources/hermes-user-profile]] — Hermes Agent User Profile\n\n"
             "## Concepts & Telemetry\n"
-            "- [[concepts/hermes-holographic-facts]] ([[hermes-holographic-facts]] / [[.hermes/wiki/main/concepts/hermes-holographic-facts]]) — Hermes Holographic Fact Bank (STRATA Contrast-Guarded)\n"
-            "- [[concepts/hermes-interaction-telemetry]] ([[hermes-interaction-telemetry]]) — Hermes Harness-Native Interaction Telemetry\n"
+            "- [[concepts/hermes-holographic-facts]] — Hermes Holographic Fact Bank (STRATA Contrast-Guarded)\n"
+            "- [[concepts/hermes-interaction-telemetry]] — Hermes Harness-Native Interaction Telemetry\n"
         )
         self._atomic_write_text(index_path, index_content)
         synced.append(str(index_path))
@@ -476,11 +474,11 @@ class ContinuousImprovementMonitor:
         # Ensure vault has its own local git repository so GBrain sync tracks changes cleanly
         try:
             if not (vault / ".git").exists():
-                subprocess.run(["git", "init", "-b", "main"], cwd=str(vault), check=False, capture_output=True)
-                subprocess.run(["git", "config", "user.email", "hermes@local"], cwd=str(vault), check=False, capture_output=True)
-                subprocess.run(["git", "config", "user.name", "Hermes Agent"], cwd=str(vault), check=False, capture_output=True)
-            subprocess.run(["git", "add", "-A"], cwd=str(vault), check=False, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "chore(wiki): sync Hermes knowledge vault"], cwd=str(vault), check=False, capture_output=True)
+                subprocess.run(["git", "init", "-b", "main"], cwd=str(vault), check=False, capture_output=True, timeout=15)
+                subprocess.run(["git", "config", "user.email", "hermes@local"], cwd=str(vault), check=False, capture_output=True, timeout=15)
+                subprocess.run(["git", "config", "user.name", "Hermes Agent"], cwd=str(vault), check=False, capture_output=True, timeout=15)
+            subprocess.run(["git", "add", "-A"], cwd=str(vault), check=False, capture_output=True, timeout=15)
+            subprocess.run(["git", "commit", "-m", "chore(wiki): sync Hermes knowledge vault"], cwd=str(vault), check=False, capture_output=True, timeout=15)
         except Exception:
             pass
 
@@ -499,8 +497,10 @@ class ContinuousImprovementMonitor:
 
         env = os.environ.copy()
         bun_bin = str(Path.home() / ".bun" / "bin")
-        node_bin = str(Path.home() / ".nvm" / "versions" / "node" / "v24.16.0" / "bin")
-        env["PATH"] = f"{bun_bin}:{node_bin}:/usr/local/bin:/usr/bin:/bin:" + env.get("PATH", "")
+        nvm_bins = [str(p) for p in sorted((Path.home() / ".nvm" / "versions" / "node").glob("*/bin"), reverse=True)]
+        which_node = shutil.which("node")
+        extra_paths = [bun_bin] + nvm_bins + ([str(Path(which_node).parent)] if which_node else []) + ["/usr/local/bin", "/usr/bin", "/bin"]
+        env["PATH"] = ":".join(extra_paths) + ":" + env.get("PATH", "")
         env["GBRAIN_HOME"] = str(gbrain_home_parent)
         env["GBRAIN_MODEL"] = "litellm:gemini-3.8-flash"
         env["LITELLM_BASE_URL"] = self.config.api_base

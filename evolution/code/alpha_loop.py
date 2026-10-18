@@ -114,7 +114,7 @@ class QualityDiversityDB:
         with conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, score FROM candidates 
+                SELECT id, score, content FROM candidates 
                 WHERE target_name = ? AND feature_bin = ?
                 ORDER BY score DESC LIMIT 1
             """, (target_name, feature_bin))
@@ -123,7 +123,13 @@ class QualityDiversityDB:
             if row:
                 existing_id = row[0]
                 existing_score = row[1]
-                if score > existing_score:
+                existing_content = row[2] or ""
+                stale_seed_contract = (
+                    generation == 0
+                    and artifact_type == "code"
+                    and not ASTContractGuard.verify_lock(content, existing_content)
+                )
+                if score > existing_score or stale_seed_contract:
                     cursor.execute("""
                         UPDATE candidates 
                         SET parent_id = ?, target_name = ?, artifact_type = ?, content = ?, accuracy = ?, latency_ms = ?, 

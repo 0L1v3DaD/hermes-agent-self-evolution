@@ -360,3 +360,33 @@ class TestPhase5ContinuousImprovement:
         assert dep["summary"]["policy"]["create_pr"] is False
         assert len(dep["deployed_registries"]) == 1
 
+
+class TestAISelfEvolutionSidecar:
+    def test_ast_bug_and_race_scanner_zero_violations_on_repo(self):
+        from evolution.monitor.ai_sidecar import AISelfEvolutionSidecar
+
+        sidecar = AISelfEvolutionSidecar()
+        findings = sidecar.scan_bugs_and_races()
+        ast_violations = [
+            f for f in findings
+            if f["id"] in ("sqlite_connect_without_timeout", "subprocess_without_timeout", "bare_except_clause")
+        ]
+        assert ast_violations == [], f"Unexpected AST violations: {ast_violations}"
+
+    def test_kpis_and_dashboard_rendering(self, tmp_path):
+        from evolution.monitor.ai_sidecar import AISelfEvolutionSidecar
+
+        sidecar = AISelfEvolutionSidecar()
+        report_path = sidecar.output_dir / "sidecar_kpi_report.json"
+        mtime_before = report_path.stat().st_mtime if report_path.exists() else None
+        report = sidecar.run_sidecar_cycle(dry_run=True, use_ai=False)
+        mtime_after = report_path.stat().st_mtime if report_path.exists() else None
+        assert mtime_before == mtime_after, "dry_run=True must never overwrite sidecar_kpi_report.json"
+        assert "phase1_skills_dom" in report["kpis"]
+        assert "phase4_code_qd_inv" in report["kpis"]
+        assert "phase5_dreaming_and_telemetry" in report["kpis"]
+        md = sidecar.render_markdown_dashboard(report)
+        assert "HEOS AI Sidecar" in md
+        assert "End-to-End Phase 1–5 KPIs" in md
+
+
